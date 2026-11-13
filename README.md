@@ -1,71 +1,65 @@
-# MeanFlow — One-step Generative Modeling (Deep Learning 2026, DL-086)
+## Results
 
-From-scratch PyTorch implementation of **Mean Flows for One-step Generative Modeling**
-(Geng, Deng, Bai, Kolter, He; arXiv:2505.13447, 2025).
+All numbers below come from the completed local run (CPU, PyTorch 2.15.0, Python 3.12.4). Only the identity test and the toy experiments were run. **MNIST and CIFAR-10 have not been run yet** (no CUDA GPU was available), so there are no image results or FID scores.
 
-Core contribution implemented here (`meanflow.py`): the **average-velocity network**
-`u_θ(z, r, t)`, the **MeanFlow identity target** computed with one **JVP**
-(`torch.func.jvp`), and the **1-step / few-step sampler**, compared against a
-**flow-matching** baseline that uses the same network with `r = t`.
+### 1. MeanFlow identity check (`test_identity.py`)
 
-> **Status:** code written to spec; the MeanFlow identity (and its JVP form) is verified
-> numerically by `test_identity.py` (numpy, passes). Training scripts have **not yet been
-> run end-to-end** — run them on Colab and fill the results tables below.
+All four checks pass: *MeanFlow identity and its JVP form hold numerically.*
 
-## Files
-
-| file | purpose |
+| Check | Max abs. error |
 |---|---|
-| `meanflow.py` | networks (MLP, small U-Net), MeanFlow loss (JVP and finite-diff variants), FM loss, samplers, EMA, sliced-Wasserstein metric |
-| `datasets.py` | 2-D toys: two moons, 8 Gaussians, spiral |
-| `test_identity.py` | numpy check of the MeanFlow identity on an analytic Gaussian case (no torch needed) |
-| `run_toy.py` | FM vs MeanFlow on toys + ablations → `results_toy/` |
-| `train_images.py` | FM vs MeanFlow on MNIST / CIFAR-10 (+ FID) → `results_images/` |
-| `MeanFlow_Colab.ipynb` | runnable Colab notebook |
-| `report_draft.md` | report draft (convert to IEEE two-column) |
-| `VIVA_NOTES.md` | derivation + likely viva questions |
+| (1) \|u(z, t−h, t) − v(z, t)\| (finite-h limit) | 3.35e-07 |
+| (2) \|u − (v − (t−r) du/dt)\| (total derivative) | 1.15e-10 |
+| (3) \|v ∂ᵤu + ∂ₜu − du/dt\| | 9.98e-10 |
+| (4) \|u − (v − (t−r) · JVP)\| | 3.67e-10 |
 
-## Setup and run
+### 2. Toy data: 1-step MeanFlow vs multi-step Flow Matching
 
+Sliced Wasserstein-2 (SW₂, lower is better), 10,000 training iterations (`python run_toy.py --iters 10000 --out results_toy`).
+FM-*n* = Flow Matching with *n* Euler steps; MF-*n* = MeanFlow with *n* steps.
+
+| dataset | noise floor | FM-1 | FM-8 | FM-128 | MF-1 | MF-2 | MF-8 |
+|---|---|---|---|---|---|---|---|
+| moons | 0.048 | 1.391 | 0.185 | 0.034 | 0.393 | 0.358 | 0.245 |
+| 8gaussians | 0.070 | 1.390 | 0.081 | 0.069 | 0.350 | 0.241 | 0.260 |
+| spiral | 0.045 | 0.944 | 0.095 | 0.031 | 0.266 | 0.136 | 0.097 |
+
+**Findings**
+- With one step, MeanFlow is 3.5× (moons), 4.0× (8gaussians) and 3.5× (spiral) better than Flow Matching.
+- A second MeanFlow step helps on every dataset.
+- Multi-step Flow Matching is still better at 8 and 128 steps in this small setup (FM-128 is close to the noise floor), so MeanFlow does **not** close the gap here.
+
+Samples (columns: data, FM-1, FM-8, FM-128, MF-1, MF-2):
+
+![moons](results_toy/samples_moons.png)
+![8gaussians](results_toy/samples_8gaussians.png)
+![spiral](results_toy/samples_spiral.png)
+
+### 3. Ablations on 8gaussians (mean ± std, 3 seeds)
+
+| config | SW₂ 1-step | SW₂ 2-step |
+|---|---|---|
+| default (p_neq=0.25, JVP, adaptive) | 0.297 ± 0.081 | 0.280 ± 0.042 |
+| p_neq=0.0 (pure FM targets) | 0.286 ± 0.036 | 0.301 ± 0.025 |
+| p_neq=0.5 | 97.986 ± 132.607 | 258.023 ± 354.766 |
+| p_neq=1.0 | 4.700 ± 1.441 | 4.819 ± 2.497 |
+| finite-difference instead of JVP | 0.285 ± 0.048 | 0.202 ± 0.005 |
+| no adaptive loss weighting | 2.949 ± 0.804 | 1.960 ± 0.164 |
+
+**Findings**
+- Adaptive loss weighting is essential (about 10× worse without it).
+- A finite-difference derivative is statistically indistinguishable from the JVP at 1 step.
+- p_neq=0.5 diverged in at least one seed. p_neq=0 did not fail, which does **not** match Table 1a of the MeanFlow paper; the cause is not yet investigated.
+
+### Limitations
+- Toy 2-D data only, 10,000 iterations, CPU; ablations use 3 seeds.
+- MNIST and CIFAR-10 (`train_images.py`) are implemented but not yet run.
+
+### Reproduce
 ```bash
-pip install -r requirements.txt
-python test_identity.py                      # sanity check of the maths (no GPU)
-python run_toy.py --quick                    # ~1 min smoke test
-python run_toy.py --iters 10000              # main toy results + ablations
-python train_images.py --dataset mnist   --iters 20000
-python train_images.py --dataset cifar10 --iters 60000   # scale down if Colab T4 time is short
+python test_identity.py
+python run_toy.py --iters 10000 --out results_toy
+# GPU required in practice:
+python train_images.py --dataset mnist --iters 20000
+python train_images.py --dataset cifar10 --iters 60000
 ```
-
-Seeds: main toy run uses seed 0; ablations use seeds 100, 101, 102. Fixed in code.
-If `torch.func.jvp` raises "forward AD not supported" for some op, use `--dt_mode fd`
-and report it under failure cases.
-
-## Results (fill after running)
-
-Toy (SW2 ↓), from `results_toy/results.md`:
-
-| dataset | noise floor | FM 1-step | FM 8-step | FM 128-step | MF 1-step | MF 2-step |
-|---|---|---|---|---|---|---|
-| moons | TODO | TODO | TODO | TODO | TODO | TODO |
-| 8gaussians | TODO | TODO | TODO | TODO | TODO | TODO |
-| spiral | TODO | TODO | TODO | TODO | TODO | TODO |
-
-Images (FID ↓), from `results_images/*/results.md`:
-
-| dataset | FM 1-step | FM 50-step | MF 1-step | MF 2-step | paper (MF 1-step) |
-|---|---|---|---|---|---|
-| MNIST | TODO | TODO | TODO | TODO | n/a |
-| CIFAR-10 | TODO | TODO | TODO | TODO | TODO (take from paper) |
-
-## What differs from the paper
-
-- Small U-Net / MLP instead of the paper's architectures; far fewer iterations.
-- t/r sampling distribution, fraction of `r ≠ t`, loss-weighting constants are my
-  defaults — compare with the paper's appendix and list the differences here.
-- FID on 10k samples (not 50k), so numbers are not directly comparable to the paper.
-- Sliced-Wasserstein distance is used on the 2-D toys (no FID there).
-
-## References
-
-- Z. Geng, M. Deng, X. Bai, J. Z. Kolter, K. He, "Mean Flows for One-step Generative Modeling", arXiv:2505.13447, 2025.
-- If you consult any official / third-party implementation, cite it here (course requirement).
